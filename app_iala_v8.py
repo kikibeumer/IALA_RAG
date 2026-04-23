@@ -110,7 +110,7 @@ def load_pdfs_from_github_repos(repo_list):
                 if response is None or response.status_code != 200:
                     continue
 
-                reader = PyPDF2.PdfReader(BytesIO(response.content))
+                reader = PyPDF2.PdfReader(BytesIO(response.content)) # RESEARCH pdfplumber IS BETTER FOR BETTER RETRIEVAL?
 
                 for page_num, page in enumerate(reader.pages):
                     text = page.extract_text()
@@ -139,8 +139,8 @@ def load_pdfs_from_github_repos(repo_list):
 
 def split_documents(documents):
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=2500,
-        chunk_overlap=400,
+        chunk_size=800,
+        chunk_overlap=160,
     )
     return splitter.split_documents(documents)
 
@@ -182,12 +182,43 @@ def build_vector_store():
 
 
 # =======================
-# QA
+# Q&A
 # =======================
 
 def get_answer(query, vector_store, llm):
 
-    docs = vector_store.similarity_search(query, k=4)
+    # 🔹 Get docs WITH scores
+    results = vector_store.similarity_search_with_score(
+    query,
+    k=7,
+    fetch_k=12
+    )
+
+    docs = [doc for doc, score in results]
+    scores = [score for doc, score in results]
+
+    # 🔹 Convert FAISS distance → similarity-like score
+    # (FAISS returns distance, lower = better → invert it)
+    if scores:
+        max_score = max(scores)
+        min_score = min(scores)
+
+        # normalize to 0–1 (safe)
+        norm_scores = [
+            1 - (s - min_score) / (max_score - min_score + 1e-8)
+            for s in scores
+        ]
+
+        confidence = sum(norm_scores) / len(norm_scores)
+    else:
+        confidence = 0.0
+
+    # 🔹 DEBUG → terminal in VS Code
+    print("\n==============================")
+    print(f"[DEBUG] Query: {query}")
+    print(f"[DEBUG] Raw scores: {scores}")
+    print(f"[DEBUG] Confidence: {confidence:.3f}")
+    print("==============================\n")
 
     context = "\n\n".join(
         f"{d.page_content}" for d in docs
@@ -200,12 +231,16 @@ Context:
 Question: {query}
 
 Answer:
+- Answer in 8-15 sentences max
+- Be concise and direct
 - Write formulas in normal human-readable math (like a/b, x^2)
 - Only use LaTeX if needed, wrapped in $...$
 """
 
     response = llm.invoke(prompt)
-    return response.content
+
+    # 🔹 OPTIONAL: append confidence to answer (can remove if you don't want UI display)
+    return response.content + f"\n\n---\nConfidence: {confidence:.2f}"
 
 
 # =======================
@@ -213,6 +248,7 @@ Answer:
 # =======================
 
 def render_message(content):
+    # normalize bad latex formats
     content = content.replace("\\(", "$").replace("\\)", "$")
     content = content.replace("\\[", "$$").replace("\\]", "$$")
 
@@ -225,6 +261,7 @@ def render_message(content):
 
 def main():
 
+# ==============================================================================
     st.set_page_config(
         page_title="IALA Chat",
         layout="wide",
@@ -242,6 +279,9 @@ def main():
         --subtitle-color: #ffffff;
     }
 
+    /* ===== FULL PAGE FIX ===== */
+
+    /* Remove default padding/margins cleanly */
     .block-container {
         padding: 0rem 1rem 0rem 2rem !important;
     }
@@ -251,15 +291,18 @@ def main():
         padding: 0 !important;
     }
 
+    /* Remove Streamlit header/footer */
     header, footer {
         visibility: hidden;
     }
 
+    /* ===== Background ===== */
     .stApp {
         background: url("https://oz3cc.dk/shutterstock_142037662.jpg") no-repeat center center fixed;
         background-size: cover;
     }
 
+    /* Bottom yellow line */
     .stApp::after {
         content: "";
         position: fixed;
@@ -271,6 +314,7 @@ def main():
         z-index: 9999;
     }
 
+    /* Disclaimer text */
     .stApp::before {
         content: "Gulliver is an AI model and can make mistakes.";
         position: fixed;
@@ -282,11 +326,13 @@ def main():
         z-index: 9999;
     }
 
+    /* ===== Typography ===== */
     body, .stApp {
         color: var(--dark-blue);
         font-family: 'Arial Rounded MT Bold', sans-serif;
     }
 
+    /* Fix title position */
     h1 {
         color: var(--title-color) !important;
         font-weight: 800;
@@ -298,6 +344,7 @@ def main():
         color: var(--subtitle-color) !important;
     }
 
+    /* ===== Logo ===== */
     .logo-container {
         position: absolute;
         top: 20px;  
@@ -309,12 +356,13 @@ def main():
         height: 110px;
         border-radius: 6px;
     }
-
+                
     .logo-container img:hover {
         transform: translateY(-1px);
         opacity: 0.9;
     }
-
+                
+    /* ===== Buttons ===== */
     .stButton button {
         background: linear-gradient(135deg, var(--light-blue), var(--dark-blue));
         color: white;
@@ -330,12 +378,16 @@ def main():
         opacity: 0.9;
     }
 
+    /* ===== Chat ===== */
+
+    /* Remove outer black boxes */
     [data-testid="stChatMessage"] {
         border: none !important;
         box-shadow: none !important;
         padding: 6px 0 !important;
     }
 
+    /* Chat bubbles */
     [data-testid="stChatMessageContent"] {
         background-color: #cadde6 !important;
         color: black !important;
@@ -343,10 +395,12 @@ def main():
         padding: 12px !important;
     }
 
+    /* Text color */
     [data-testid="stChatMessageContent"] * {
         color: black !important;
     }
 
+    /* Avatars */
     div[data-testid="stChatMessageAvatarUser"] {
         background-color: var(--yellow) !important;
     }
@@ -354,6 +408,7 @@ def main():
     div[data-testid="stChatMessageAvatarAssistant"] {
         background-color: var(--dark-blue) !important;
     }
+
     </style>
     """, unsafe_allow_html=True)
 
@@ -371,26 +426,6 @@ def main():
     # ===== Content =====
     st.title("Ask Jonathan")
     st.markdown("Ask any question regarding the IALA Publications")
-
-    # =======================
-    # SCROLL TARGET
-    # =======================
-    st.markdown("<div id='chat_anchor'></div>", unsafe_allow_html=True)
-
-    chat = st.query_params.get("scroll", "")
-
-    if chat == "chat":
-        st.markdown(
-            """
-            <script>
-                const el = document.getElementById('chat_anchor');
-                if (el) {
-                    el.scrollIntoView({behavior: 'smooth'});
-                }
-            </script>
-            """,
-            unsafe_allow_html=True
-        )
 
 # ====================================================================================================
 
@@ -421,16 +456,7 @@ def main():
 
         st.session_state.messages.append({"role": "assistant", "content": answer})
 
-    # =======================
-    # SIDEBAR BUTTON (ADDED HERE)
-    # =======================
-    with st.sidebar:
-        st.markdown("---")
-
-        if st.button("⬇ Scroll to chat"):
-            st.query_params["scroll"] = "chat"
-            st.rerun()
-
 
 if __name__ == "__main__":
     main()
+
